@@ -15,6 +15,7 @@ fn make_config(path: String) -> Config {
         send_key: "MOUSE9".to_string(),
         mouse_button: Some(9),
         input_device_path: path,
+        target: "discord".to_string(),
     }
 }
 

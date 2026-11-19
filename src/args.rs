@@ -13,11 +13,13 @@ pub struct Config {
     pub mouse_button: Option<u32>,
     // The input device to watch with libev.
     pub input_device_path: String,
+    // The application to send events to, matched against WM_CLASS and window titles.
+    pub target: String,
 }
 
 pub fn usage(program: &str) -> String {
     format!(
-        "Usage: {program} [-v] [--xtest] [-l listen_key] [-s send_key] /dev/input/by-id/<device-name>"
+        "Usage: {program} [-v] [--xtest] [-l listen_key] [-s send_key] [-t target] /dev/input/by-id/<device-name>"
     )
 }
 
@@ -33,6 +35,7 @@ where
     let mut listen_key = "BTN_EXTRA".to_string();
     let mut send_key = "MOUSE9".to_string();
     let mut mouse_button = Some(9);
+    let mut target = "discord".to_string();
     let mut input_device_path = None;
 
     while let Some(arg) = args.next() {
@@ -41,6 +44,12 @@ where
             "--xtest" => xtest = true,
             "-l" => {
                 listen_key = args.next().ok_or_else(|| usage(&program))?;
+            }
+            "-t" | "--target" => {
+                target = args.next().ok_or_else(|| usage(&program))?;
+                if target.is_empty() {
+                    return Err(usage(&program));
+                }
             }
             "-s" => {
                 let value = args.next().ok_or_else(|| usage(&program))?;
@@ -73,6 +82,7 @@ where
         send_key,
         mouse_button,
         input_device_path,
+        target,
     })
 }
 

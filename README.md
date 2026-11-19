@@ -12,14 +12,34 @@ Based on the [original C++ version](https://github.com/Rush/wayland-push-to-talk
 
 ## Usage
 ```
-wayland-ptt [-v] [--xtest] [-l listen_key] [-s send_key] /dev/input/by-id/<device-name>
+wayland-ptt [-v] [--xtest] [-l listen_key] [-s send_key] [-t target] /dev/input/by-id/<device-name>
 ```
 
 Use the `-event-` variant of your desired input device, e.g. `usb-Logitech_G403_HERO_Gaming_Mouse_166634563336-event-mouse`.
 
+### Finding your device ID
+List the symlinks under `/dev/input/by-id/` and pick the one for your device. Mouse and keyboard devices usually have both a base node and an `-event-*` node; use the `-event-*` variant so you see key/button events rather than raw reports:
+
+```
+ls -l /dev/input/by-id/
+```
+
+If you are unsure which entry is yours, unplug/replug the device and see which symlink disappears and reappears, or check `cat /proc/bus/input/devices` for the device name. Symlink targets look like `../event5`; the stable `by-id` name (e.g. `usb-Logitech_G403_HERO_Gaming_Mouse_166634563336-event-mouse`) is what you put on the command line, since `eventN` numbers can change between boots.
+
+### Finding the target name
+`-t` matches case-insensitively against the app's X11 `WM_CLASS` and window titles, so the app's lowercase name usually works (`discord`, `mumble`). To confirm the exact value, run the tool with `-v` and press your listen key while the target app is open — verbose output prints the detected window ID. Then inspect it:
+
+```
+xprop -id <window-id> WM_CLASS _NET_WM_NAME WM_NAME
+```
+
+`WM_CLASS` contains two NUL-separated strings (instance and class); either one matching your `-t` value selects the window. For example, Mumble reports `WM_CLASS` of `mumble`, so `-t mumble` works.
+
 The quickest way to find your listen key's keycode is to run the tool with `-v` against your input device. The tool will print observed input events from that device, including the keycodes. This works for keyboard and mouse events.
 
 If `-l` is omitted, it defaults to `BTN_EXTRA`. If `-s` is omitted, it defaults to `MOUSE9`. These correspond to the "forward" side button of the mouse.
+
+If `-t` is omitted, the target application defaults to `discord`. The value is matched case-insensitively against X11 `WM_CLASS` and window titles, so `-t mumble` targets Mumble, `-t whisper` targets Whisper, and so on. The target application must expose a window on the same X11 display (i.e. run under XWayland); native Wayland windows cannot receive these events.
 
 The direct Discord window backend is the default. `--xtest` selects the previous XTEST backend for comparison. Discord must expose a window on the same X11 display as this program.
 

@@ -64,7 +64,13 @@ fn main() {
             eprintln!("Target key pressed: {}", config.send_key);
         }
 
-        if let Err(err) = send_target_state(&mut x11_config, x11_target, state, config.verbose) {
+        if let Err(err) = send_target_state(
+            &mut x11_config,
+            x11_target,
+            state,
+            config.verbose,
+            &config.target,
+        ) {
             eprintln!("{err}");
             if config.xtest {
                 process::exit(1);

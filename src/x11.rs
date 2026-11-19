@@ -21,7 +21,7 @@ const XTEST_MINOR_VERSION: u16 = 2;
 pub struct X11Config {
     pub connection: RustConnection,
     pub screen_num: usize,
-    discord_window: Option<Window>,
+    target_window: Option<Window>,
     pressed_window: Option<Window>,
     wm_class: Atom,
     net_wm_name: Atom,
@@ -93,7 +93,7 @@ impl fmt::Display for ConfigureX11Error {
             Self::SendInput { source } => {
                 write!(f, "Failed to send X11 input event: {source}")
             }
-            Self::FindWindow { source } => write!(f, "Failed to find Discord window: {source}"),
+            Self::FindWindow { source } => write!(f, "Failed to find target window: {source}"),
         }
     }
 }
@@ -156,7 +156,7 @@ fn configure_x11_with_display_name_and_backend(
     Ok(X11Config {
         connection,
         screen_num,
-        discord_window: None,
+        target_window: None,
         pressed_window: None,
         wm_class,
         net_wm_name,
@@ -186,11 +186,12 @@ pub fn send_target_state(
     target: X11Target,
     state: ListenKeyState,
     verbose: bool,
+    target_name: &str,
 ) -> Result<(), ConfigureX11Error> {
     let (event_type, detail) = event_type_and_detail(target, state);
 
     if !x11_config.xtest {
-        return send_direct(x11_config, target, state, verbose);
+        return send_direct(x11_config, target, state, verbose, target_name);
     }
 
     let cookie = x11_config
@@ -228,22 +229,23 @@ fn property_text(connection: &RustConnection, window: Window, atom: Atom) -> Opt
     Some(String::from_utf8_lossy(&reply.value).into_owned())
 }
 
-fn discord_match_score(config: &X11Config, window: Window) -> u8 {
+fn target_match_score(config: &X11Config, window: Window, target: &str) -> u8 {
+    let target = target.to_ascii_lowercase();
     if let Some(class) = property_text(&config.connection, window, config.wm_class) {
-        if class.split('\0').any(|part| {
-            let part = part.to_ascii_lowercase();
-            part == "discord" || part.starts_with("discord-") || part.ends_with(".discord")
-        }) {
+        if class
+            .split('\0')
+            .any(|part| part.to_ascii_lowercase().contains(&target))
+        {
             return 2;
         }
-        // A browser tab may have "Discord" in its title. Its WM_CLASS belongs to the browser.
+        // A browser tab may have the target name in its title. Its WM_CLASS belongs to the browser.
         if !class.is_empty() {
             return 0;
         }
     }
     for atom in [config.net_wm_name, config.wm_name] {
         if property_text(&config.connection, window, atom)
-            .is_some_and(|name| name.to_ascii_lowercase().contains("discord"))
+            .is_some_and(|name| name.to_ascii_lowercase().contains(&target))
         {
             return 1;
         }
@@ -251,12 +253,15 @@ fn discord_match_score(config: &X11Config, window: Window) -> u8 {
     0
 }
 
-fn find_discord_window(config: &X11Config) -> Result<Option<Window>, ConfigureX11Error> {
+fn find_target_window(
+    config: &X11Config,
+    target: &str,
+) -> Result<Option<Window>, ConfigureX11Error> {
     let root = config.connection.setup().roots[config.screen_num].root;
     let mut pending = VecDeque::from([root]);
     let mut title_match = None;
     while let Some(window) = pending.pop_front() {
-        match discord_match_score(config, window) {
+        match target_match_score(config, window, target) {
             2 => return Ok(Some(window)),
             1 if title_match.is_none() => title_match = Some(window),
             _ => {}
@@ -284,6 +289,7 @@ fn send_direct(
     target: X11Target,
     state: ListenKeyState,
     verbose: bool,
+    target_name: &str,
 ) -> Result<(), ConfigureX11Error> {
     if state == ListenKeyState::Pressed && config.pressed_window.is_some() {
         return Ok(());
@@ -294,29 +300,29 @@ fn send_direct(
     if let Some(pressed_window) = config.pressed_window {
         if !window_exists(config, pressed_window) {
             config.pressed_window = None;
-            config.discord_window = None;
+            config.target_window = None;
             if verbose {
-                eprintln!("Discord window disappeared before release; event skipped");
+                eprintln!("Target window disappeared before release; event skipped");
             }
             return Ok(());
         }
     }
     if config
-        .discord_window
+        .target_window
         .is_some_and(|window| !window_exists(config, window))
     {
-        config.discord_window = None;
+        config.target_window = None;
     }
-    if config.discord_window.is_none() {
-        config.discord_window = find_discord_window(config)?;
+    if config.target_window.is_none() {
+        config.target_window = find_target_window(config, target_name)?;
         if verbose {
-            match config.discord_window {
-                Some(window) => eprintln!("Detected Discord window: {window:#x}"),
-                None => eprintln!("Discord window not found; event skipped"),
+            match config.target_window {
+                Some(window) => eprintln!("Detected {target_name} window: {window:#x}"),
+                None => eprintln!("{target_name} window not found; event skipped"),
             }
         }
     }
-    let Some(window) = config.pressed_window.or(config.discord_window) else {
+    let Some(window) = config.pressed_window.or(config.target_window) else {
         return Ok(());
     };
     let root = config.connection.setup().roots[config.screen_num].root;
@@ -356,7 +362,7 @@ fn send_direct(
         .into(),
     };
     if verbose {
-        eprintln!("SendEvent {target:?} {state:?} to Discord window {window:#x}");
+        eprintln!("SendEvent {target:?} {state:?} to {target_name} window {window:#x}");
     }
     // NO_EVENT delivers to the client that owns this window, even if it did not
     // select KeyPress/ButtonPress on this exact window.
@@ -367,7 +373,7 @@ fn send_direct(
         .check()
         .map_err(|source| ConfigureX11Error::SendInput { source });
     if let Err(err) = result {
-        config.discord_window = None;
+        config.target_window = None;
         config.pressed_window = None;
         if verbose {
             eprintln!("SendEvent failed: {err}");
@@ -384,7 +390,7 @@ fn send_direct(
         None
     };
     if verbose {
-        eprintln!("SendEvent request completed (Discord delivery and handling unverified)");
+        eprintln!("SendEvent request completed ({target_name} delivery and handling unverified)");
     }
     Ok(())
 }

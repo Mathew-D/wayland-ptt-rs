@@ -17,6 +17,7 @@ fn parses_defaults_with_device_path() {
             send_key: "MOUSE9".to_string(),
             mouse_button: Some(9),
             input_device_path: "/dev/input/by-id/test-kbd".to_string(),
+            target: "discord".to_string(),
         }
     );
 }
@@ -43,6 +44,7 @@ fn parses_all_supported_flags() {
             send_key: "F24".to_string(),
             mouse_button: None,
             input_device_path: "/dev/input/by-id/test-kbd".to_string(),
+            target: "discord".to_string(),
         }
     );
 }
@@ -66,6 +68,7 @@ fn parses_mouse_target() {
             send_key: "MOUSE5".to_string(),
             mouse_button: Some(5),
             input_device_path: "/dev/input/by-id/test-mouse".to_string(),
+            target: "discord".to_string(),
         }
     );
 }
