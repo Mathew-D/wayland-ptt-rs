@@ -5,10 +5,13 @@ edition = "2024"
 description = "Enables push-to-talk (PTT) in X11 apps running under XWayland"
 repository = "https://github.com/willroberts/wayland-ptt-rs"
 license = "MIT"
-keywords = ["wayland", "xwayland", "x11", "push-to-talk", "evdev"]
+keywords = ["wayland", "xwayland", "x11", "push-to-talk", "global-shortcuts"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-evdev = "0.13.2"
-x11rb = { version = "0.13.2", features = ["xtest"] }
+wayland-backend = "0.3.17"
+wayland-client = "0.31.15"
+wayland-scanner = "0.31.11"
+x11rb = { version = "0.13.2", features = ["xtest", "xinput"] }
 xkbcommon-rs = "0.1.2"
+libc = "0.2"

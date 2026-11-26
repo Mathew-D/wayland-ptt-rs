@@ -1,10 +1,9 @@
 use std::process;
 
 use wayland_ptt::args::parse_args;
-use wayland_ptt::evdev::{
-    ListenKeyState, configure_evdev, input_device_metadata, read_next_listen_key_state,
-};
-use wayland_ptt::x11::{configure_x11_target, configure_x11_with_backend, send_target_state};
+use wayland_ptt::uinput::{UinputKeyboard, evdev_code_for_x_keycode};
+use wayland_ptt::umbriel;
+use wayland_ptt::x11::{X11Target, configure_x11_target, configure_x11_with_backend};
 
 fn main() {
     let config = match parse_args() {
@@ -15,13 +14,6 @@ fn main() {
         }
     };
 
-    let mut evdev_config = match configure_evdev(&config) {
-        Ok(config) => config,
-        Err(err) => {
-            eprintln!("{err}");
-            process::exit(1);
-        }
-    };
     let mut x11_config = match configure_x11_with_backend(config.xtest) {
         Ok(config) => config,
         Err(err) => {
@@ -38,43 +30,35 @@ fn main() {
         }
     };
 
-    for line in input_device_metadata(&evdev_config.device) {
-        if config.verbose {
-            eprintln!("{line}");
+    if config.xtest {
+        if let X11Target::Key { keycode } = x11_target {
+            if let Some(code) = evdev_code_for_x_keycode(keycode) {
+                match UinputKeyboard::new(code) {
+                    Ok(keyboard) => {
+                        if config.verbose {
+                            eprintln!("Using uinput virtual keyboard (evdev code {code})");
+                        }
+                        x11_config.set_uinput(keyboard);
+                    }
+                    Err(err) => {
+                        if config.verbose {
+                            eprintln!("uinput unavailable ({err}); using XTEST");
+                        }
+                    }
+                }
+            }
         }
     }
 
     if config.verbose {
         eprintln!(
-            "Listening for code {:?}, sending {}",
-            evdev_config.listen_key_code, config.send_key
+            "Umbriel trigger {}, sending {} to {}",
+            config.trigger, config.send_key, config.target
         );
     }
 
-    loop {
-        let state = match read_next_listen_key_state(&mut evdev_config, config.verbose) {
-            Ok(state) => state,
-            Err(err) => {
-                eprintln!("Failed to read evdev input: {err}");
-                process::exit(1);
-            }
-        };
-
-        if config.verbose && state == ListenKeyState::Pressed {
-            eprintln!("Target key pressed: {}", config.send_key);
-        }
-
-        if let Err(err) = send_target_state(
-            &mut x11_config,
-            x11_target,
-            state,
-            config.verbose,
-            &config.target,
-        ) {
-            eprintln!("{err}");
-            if config.xtest {
-                process::exit(1);
-            }
-        }
+    if let Err(err) = umbriel::run(&config, x11_config, x11_target) {
+        eprintln!("{err}");
+        process::exit(1);
     }
 }

@@ -1,73 +1,62 @@
 # wayland-ptt-rs
-Experiments with push-to-talk (PTT) input forwarding for X11 apps running under XWayland.
 
-Wayland routes input to the active window. This tool reads a physical input device through `evdev` and experiments with forwarding its events to Discord on XWayland.
+Background push-to-talk forwarding for X11 apps running under XWayland on Umbriel.
 
-Based on the [original C++ version](https://github.com/Rush/wayland-push-to-talk-fix), with some language-based differences like using a pure-Rust `evdev` implementation instead of `libevdev`, and `x11rb` instead of `libxdo`.
+The daemon registers a keyboard chord with Umbriel's private `umbriel_global_shortcuts_manager_v1` protocol. Umbriel delivers `activated` when the chord is pressed and `deactivated` when it is released, even while a native Wayland window has focus. While the chord is held, the daemon emits the configured key through a `/dev/uinput` virtual keyboard so applications that read evdev directly (such as Mumble's global-shortcut engine) see it. If `/dev/uinput` is unavailable it falls back to XTEST injection.
 
-## How It Works
-- Parses user configuration for which keys to receive and send
-- Listens to input events via `evdev`
-- If an event matches the `listen_key`, find Discord's X11 window and send the matching press or release directly with X11 `SendEvent`
+The default configuration targets Mumble's Whisper/Shout shortcut, which is bound to X keycode `49` (the grave/backtick key, evdev code `41`) in `mumble_settings.json`:
+
+- Umbriel trigger: `CTRL+grave`
+- key sent while held: `grave`
+- target: `mumble`
 
 ## Usage
-```
-wayland-ptt [-v] [--xtest] [-l listen_key] [-s send_key] [-t target] /dev/input/by-id/<device-name>
-```
-
-Use the `-event-` variant of your desired input device, e.g. `usb-Logitech_G403_HERO_Gaming_Mouse_166634563336-event-mouse`.
-
-### Finding your device ID
-List the symlinks under `/dev/input/by-id/` and pick the one for your device. Mouse and keyboard devices usually have both a base node and an `-event-*` node; use the `-event-*` variant so you see key/button events rather than raw reports:
 
 ```
-ls -l /dev/input/by-id/
+wayland-ptt [-v] [--send-event] [--trigger TRIGGER] [--shortcut-id ID] [--application APP] [-s send_key] [-t target]
 ```
 
-If you are unsure which entry is yours, unplug/replug the device and see which symlink disappears and reappears, or check `cat /proc/bus/input/devices` for the device name. Symlink targets look like `../event5`; the stable `by-id` name (e.g. `usb-Logitech_G403_HERO_Gaming_Mouse_166634563336-event-mouse`) is what you put on the command line, since `eventN` numbers can change between boots.
-
-### Finding the target name
-`-t` matches case-insensitively against the app's X11 `WM_CLASS` and window titles, so the app's lowercase name usually works (`discord`, `mumble`). To confirm the exact value, run the tool with `-v` and press your listen key while the target app is open — verbose output prints the detected window ID. Then inspect it:
+Examples:
 
 ```
-xprop -id <window-id> WM_CLASS _NET_WM_NAME WM_NAME
+wayland-ptt
+wayland-ptt --trigger CTRL+Space -s grave -t mumble
+wayland-ptt -s MOUSE5 -t discord
 ```
 
-`WM_CLASS` contains two NUL-separated strings (instance and class); either one matching your `-t` value selects the window. For example, Mumble reports `WM_CLASS` of `mumble`, so `-t mumble` works.
+`--trigger` uses Umbriel's shortcut grammar: uppercase `CTRL`, `ALT`, `SHIFT`, and `LOGO` modifiers joined with `+`, followed by an XKB keysym name such as `grave`, `Space`, or `F13`.
 
-The quickest way to find your listen key's keycode is to run the tool with `-v` against your input device. The tool will print observed input events from that device, including the keycodes. This works for keyboard and mouse events.
+`-s` accepts an XKB keysym name or `MOUSE<n>`. For keys, the default backend creates a uinput virtual keyboard (requires write access to `/dev/uinput`) so evdev readers see the press/release; it falls back to XTEST when uinput is unavailable. `--send-event` selects the older direct `SendEvent` backend for X11 apps that accept synthetic window events.
 
-If `-l` is omitted, it defaults to `BTN_EXTRA`. If `-s` is omitted, it defaults to `MOUSE9`. These correspond to the "forward" side button of the mouse.
+For Mumble, enable its evdev global-shortcut engine (`"enable_evdev": true` under `"shortcuts"` in `mumble_settings.json`) and restart Mumble. Because the virtual keyboard is a real input device, the emitted key can also reach the focused Wayland window; bind Mumble to a non-printing key if that is a problem.
 
-If `-t` is omitted, the target application defaults to `discord`. The value is matched case-insensitively against X11 `WM_CLASS` and window titles, so `-t mumble` targets Mumble, `-t whisper` targets Whisper, and so on. The target application must expose a window on the same X11 display (i.e. run under XWayland); native Wayland windows cannot receive these events.
+`-t` matches case-insensitively against X11 `WM_CLASS` and window titles when using `--send-event`. With uinput/XTEST, input is injected globally and the target is used only for direct delivery and verbose logging.
 
-The direct Discord window backend is the default. `--xtest` selects the previous XTEST backend for comparison. Discord must expose a window on the same X11 display as this program.
+## Umbriel approval and credentials
 
-To try unfocused PTT, bind Discord PTT to Mouse 9 or F13, then run (use `-s F13` for the F13 case):
+The first `bind` for a new application/shortcut ID opens Umbriel's physical approval panel. Press Enter on the final approval page to approve it. The compositor-issued credential is stored privately at:
 
 ```
-wayland-ptt -v /dev/input/by-id/<device-name>
+$XDG_STATE_HOME/wayland-ptt/<application>-<shortcut-id>-<hash>
 ```
 
-Focus a native Wayland application and hold/release the physical PTT button. Verbose output shows the detected window ID, event, press/release, and whether X11 processed the `SendEvent` request. It cannot confirm delivery or handling in Discord. Confirm behavior with Discord's PTT indicator or audio.
+or `~/.local/state/wayland-ptt/...` when `XDG_STATE_HOME` is unset. Later runs restore that credential and rotate it automatically. To force fresh approval, remove the credential file or change `--application`/`--shortcut-id`.
 
-If the request completes but PTT stays inactive, inspect the logged window with `xprop -id <window-id> WM_CLASS _NET_WM_NAME WM_NAME`, then repeat while Discord is focused. If the window is Discord and the focused test works, the remaining failure is specific to background input handling. If neither test works, Discord may be ignoring synthetic events entirely.
+Umbriel stores the approved trigger durably. Changing `--trigger` does not change an already-approved shortcut unless you also change the shortcut ID or remove the stored grant.
 
 ## Installation
-Edit `wayland-ptt.desktop` and replace `/dev/input/by-id/<device-id>` with your desired device path, then install:
+
 ```
 cargo build --release
 sudo make install
 ```
-To access input devices without superuser privileges, add your user to the `input` group:
-```
-sudo usermod -aG input <user>
-```
-Confirm things are working with `ps | grep wayland-ptt` after logging in.
+
+`wayland-ptt.desktop` starts the daemon at login. Edit its `Exec=` line if you need non-default options.
 
 ## Reference
+
 - [X11 KeySym Codes](https://github.com/xkbcommon/libxkbcommon/blob/master/include/xkbcommon/xkbcommon-keysyms.h) (ignore leading `XKB_KEY_`)
-- [Finding X11 Mouse Button IDs](https://gitlab.freedesktop.org/xorg/app/xev/)
 
 ## License
+
 MIT

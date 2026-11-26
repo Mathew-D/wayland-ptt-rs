@@ -3,6 +3,9 @@ use std::fmt;
 
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::errors::{ConnectError, ConnectionError, ReplyError};
+use x11rb::protocol::xinput::{
+    self, ConnectionExt as _, DeviceUse, X11_EXTENSION_NAME as XINPUT_EXTENSION_NAME,
+};
 use x11rb::protocol::xproto::ConnectionExt as _;
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ButtonPressEvent, EventMask,
@@ -13,10 +16,27 @@ use x11rb::rust_connection::RustConnection;
 use xkbcommon_rs::keysym::keysym_from_name;
 
 use crate::args::Config;
-use crate::evdev::ListenKeyState;
+use crate::uinput::{UinputError, UinputKeyboard};
 
 const XTEST_MAJOR_VERSION: u8 = 2;
 const XTEST_MINOR_VERSION: u16 = 2;
+const XINPUT_DEVICE_KEY_PRESS: u8 = 1;
+const XINPUT_DEVICE_KEY_RELEASE: u8 = 2;
+const XINPUT_DEVICE_BUTTON_PRESS: u8 = 3;
+const XINPUT_DEVICE_BUTTON_RELEASE: u8 = 4;
+
+#[derive(Debug, Copy, Clone)]
+struct XTestInput {
+    event_base: u8,
+    keyboard_device: Option<u8>,
+    pointer_device: Option<u8>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum InputState {
+    Pressed,
+    Released,
+}
 
 pub struct X11Config {
     pub connection: RustConnection,
@@ -27,6 +47,14 @@ pub struct X11Config {
     net_wm_name: Atom,
     wm_name: Atom,
     xtest: bool,
+    xtest_input: Option<XTestInput>,
+    uinput: Option<UinputKeyboard>,
+}
+
+impl X11Config {
+    pub fn set_uinput(&mut self, keyboard: UinputKeyboard) {
+        self.uinput = Some(keyboard);
+    }
 }
 
 #[derive(Debug)]
@@ -38,6 +66,12 @@ pub enum ConfigureX11Error {
     MissingXtestExtension,
     QueryXtestVersion {
         source: ReplyError,
+    },
+    QueryXinput {
+        source: ReplyError,
+    },
+    Uinput {
+        source: UinputError,
     },
     InvalidSendKey {
         key: String,
@@ -78,6 +112,10 @@ impl fmt::Display for ConfigureX11Error {
             Self::QueryXtestVersion { source } => {
                 write!(f, "Failed to query XTEST version: {source}")
             }
+            Self::QueryXinput { source } => {
+                write!(f, "Failed to query XInput devices: {source}")
+            }
+            Self::Uinput { source } => write!(f, "{source}"),
             Self::InvalidSendKey { key } => {
                 write!(f, "Failed to resolve X11 send key: {key}")
             }
@@ -138,6 +176,11 @@ fn configure_x11_with_display_name_and_backend(
             .reply()
             .map_err(|source| ConfigureX11Error::QueryXtestVersion { source })?;
     }
+    let xtest_input = if xtest {
+        query_xtest_input(&connection)?
+    } else {
+        None
+    };
 
     let atom = |name: &[u8]| -> Result<Atom, ConfigureX11Error> {
         Ok(connection
@@ -162,6 +205,8 @@ fn configure_x11_with_display_name_and_backend(
         net_wm_name,
         wm_name,
         xtest,
+        xtest_input,
+        uinput: None,
     })
 }
 
@@ -184,7 +229,7 @@ pub fn configure_x11_target(
 pub fn send_target_state(
     x11_config: &mut X11Config,
     target: X11Target,
-    state: ListenKeyState,
+    state: InputState,
     verbose: bool,
     target_name: &str,
 ) -> Result<(), ConfigureX11Error> {
@@ -194,16 +239,35 @@ pub fn send_target_state(
         return send_direct(x11_config, target, state, verbose, target_name);
     }
 
+    if let X11Target::Key { .. } = target {
+        if let Some(keyboard) = x11_config.uinput.as_mut() {
+            if verbose {
+                eprintln!("uinput {target:?} {state:?} code={}", keyboard.code());
+            }
+            keyboard
+                .send(state == InputState::Pressed)
+                .map_err(|source| ConfigureX11Error::Uinput { source })?;
+            return Ok(());
+        }
+    }
+
+    let (type_, deviceid) = x11_config
+        .xtest_input
+        .and_then(|input| xtest_device_event(&input, target, state))
+        .unwrap_or((event_type, 0));
+    if verbose {
+        eprintln!("XTEST {target:?} {state:?} type={type_} detail={detail} device={deviceid}");
+    }
     let cookie = x11_config
         .connection
         .xtest_fake_input(
-            event_type,
+            type_,
             detail,
             x11rb::CURRENT_TIME,
             x11rb::NONE,
             0,
             0,
-            0,
+            deviceid,
         )
         .map_err(connection_error_to_send_input_error)?;
     cookie
@@ -287,14 +351,14 @@ fn window_exists(config: &X11Config, window: Window) -> bool {
 fn send_direct(
     config: &mut X11Config,
     target: X11Target,
-    state: ListenKeyState,
+    state: InputState,
     verbose: bool,
     target_name: &str,
 ) -> Result<(), ConfigureX11Error> {
-    if state == ListenKeyState::Pressed && config.pressed_window.is_some() {
+    if state == InputState::Pressed && config.pressed_window.is_some() {
         return Ok(());
     }
-    if state == ListenKeyState::Released && config.pressed_window.is_none() {
+    if state == InputState::Released && config.pressed_window.is_none() {
         return Ok(());
     }
     if let Some(pressed_window) = config.pressed_window {
@@ -384,7 +448,7 @@ fn send_direct(
         .connection
         .flush()
         .map_err(connection_error_to_send_input_error)?;
-    config.pressed_window = if state == ListenKeyState::Pressed {
+    config.pressed_window = if state == InputState::Pressed {
         Some(window)
     } else {
         None
@@ -405,6 +469,70 @@ fn ensure_xtest_extension(connection: &RustConnection) -> Result<(), ConfigureX1
     } else {
         Err(ConfigureX11Error::MissingXtestExtension)
     }
+}
+
+fn query_xtest_input(connection: &RustConnection) -> Result<Option<XTestInput>, ConfigureX11Error> {
+    let Some(info) = connection
+        .extension_information(XINPUT_EXTENSION_NAME)
+        .map_err(|source| ConfigureX11Error::QueryXinput {
+            source: ReplyError::ConnectionError(source),
+        })?
+    else {
+        return Ok(None);
+    };
+    let reply = connection
+        .xinput_list_input_devices()
+        .map_err(|source| ConfigureX11Error::QueryXinput {
+            source: ReplyError::ConnectionError(source),
+        })?
+        .reply()
+        .map_err(|source| ConfigureX11Error::QueryXinput { source })?;
+
+    Ok(Some(XTestInput {
+        event_base: info.first_event,
+        keyboard_device: xtest_device_id(&reply, DeviceUse::IS_X_EXTENSION_KEYBOARD),
+        pointer_device: xtest_device_id(&reply, DeviceUse::IS_X_EXTENSION_POINTER),
+    }))
+}
+
+fn xtest_device_id(reply: &xinput::ListInputDevicesReply, device_use: DeviceUse) -> Option<u8> {
+    reply
+        .devices
+        .iter()
+        .zip(reply.names.iter())
+        .find_map(|(device, name)| {
+            if device.device_use != device_use {
+                return None;
+            }
+            let name = String::from_utf8_lossy(&name.name);
+            name.to_ascii_lowercase()
+                .contains("xtest")
+                .then_some(device.device_id)
+        })
+}
+
+fn xtest_device_event(
+    input: &XTestInput,
+    target: X11Target,
+    state: InputState,
+) -> Option<(u8, u8)> {
+    let (event, device) = match (target, state) {
+        (X11Target::Key { .. }, InputState::Pressed) => {
+            (XINPUT_DEVICE_KEY_PRESS, input.keyboard_device)
+        }
+        (X11Target::Key { .. }, InputState::Released) => {
+            (XINPUT_DEVICE_KEY_RELEASE, input.keyboard_device)
+        }
+        (X11Target::MouseButton { .. }, InputState::Pressed) => {
+            (XINPUT_DEVICE_BUTTON_PRESS, input.pointer_device)
+        }
+        (X11Target::MouseButton { .. }, InputState::Released) => {
+            (XINPUT_DEVICE_BUTTON_RELEASE, input.pointer_device)
+        }
+    };
+    let device = device?;
+    let event_type = input.event_base.checked_add(event)?;
+    Some((event_type, device))
 }
 
 fn connection_error_to_configure_x11_error(source: ConnectionError) -> ConfigureX11Error {
@@ -459,23 +587,21 @@ fn find_keycode_for_keysym(
     })
 }
 
-fn event_type_and_detail(target: X11Target, state: ListenKeyState) -> (u8, u8) {
+fn event_type_and_detail(target: X11Target, state: InputState) -> (u8, u8) {
     match (target, state) {
-        (X11Target::Key { keycode }, ListenKeyState::Pressed) => (KEY_PRESS_EVENT, keycode),
-        (X11Target::Key { keycode }, ListenKeyState::Released) => (KEY_RELEASE_EVENT, keycode),
-        (X11Target::MouseButton { button }, ListenKeyState::Pressed) => {
-            (BUTTON_PRESS_EVENT, button)
-        }
-        (X11Target::MouseButton { button }, ListenKeyState::Released) => {
-            (BUTTON_RELEASE_EVENT, button)
-        }
+        (X11Target::Key { keycode }, InputState::Pressed) => (KEY_PRESS_EVENT, keycode),
+        (X11Target::Key { keycode }, InputState::Released) => (KEY_RELEASE_EVENT, keycode),
+        (X11Target::MouseButton { button }, InputState::Pressed) => (BUTTON_PRESS_EVENT, button),
+        (X11Target::MouseButton { button }, InputState::Released) => (BUTTON_RELEASE_EVENT, button),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigureX11Error, X11Target, event_type_and_detail, resolve_send_keysym};
-    use crate::evdev::ListenKeyState;
+    use super::{
+        ConfigureX11Error, InputState, X11Target, XTestInput, event_type_and_detail,
+        resolve_send_keysym, xtest_device_event,
+    };
     use x11rb::protocol::xproto::{
         BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, KEY_PRESS_EVENT, KEY_RELEASE_EVENT,
     };
@@ -502,7 +628,7 @@ mod tests {
     #[test]
     fn maps_key_press_event_type_and_detail() {
         assert_eq!(
-            event_type_and_detail(X11Target::Key { keycode: 42 }, ListenKeyState::Pressed),
+            event_type_and_detail(X11Target::Key { keycode: 42 }, InputState::Pressed),
             (KEY_PRESS_EVENT, 42)
         );
     }
@@ -510,7 +636,7 @@ mod tests {
     #[test]
     fn maps_key_release_event_type_and_detail() {
         assert_eq!(
-            event_type_and_detail(X11Target::Key { keycode: 42 }, ListenKeyState::Released),
+            event_type_and_detail(X11Target::Key { keycode: 42 }, InputState::Released),
             (KEY_RELEASE_EVENT, 42)
         );
     }
@@ -518,10 +644,7 @@ mod tests {
     #[test]
     fn maps_mouse_press_event_type_and_detail() {
         assert_eq!(
-            event_type_and_detail(
-                X11Target::MouseButton { button: 5 },
-                ListenKeyState::Pressed
-            ),
+            event_type_and_detail(X11Target::MouseButton { button: 5 }, InputState::Pressed),
             (BUTTON_PRESS_EVENT, 5)
         );
     }
@@ -529,11 +652,64 @@ mod tests {
     #[test]
     fn maps_mouse_release_event_type_and_detail() {
         assert_eq!(
-            event_type_and_detail(
-                X11Target::MouseButton { button: 5 },
-                ListenKeyState::Released
-            ),
+            event_type_and_detail(X11Target::MouseButton { button: 5 }, InputState::Released),
             (BUTTON_RELEASE_EVENT, 5)
+        );
+    }
+
+    #[test]
+    fn maps_xtest_device_events() {
+        let input = XTestInput {
+            event_base: 66,
+            keyboard_device: Some(5),
+            pointer_device: Some(4),
+        };
+
+        assert_eq!(
+            xtest_device_event(&input, X11Target::Key { keycode: 49 }, InputState::Pressed),
+            Some((67, 5))
+        );
+        assert_eq!(
+            xtest_device_event(&input, X11Target::Key { keycode: 49 }, InputState::Released),
+            Some((68, 5))
+        );
+        assert_eq!(
+            xtest_device_event(
+                &input,
+                X11Target::MouseButton { button: 1 },
+                InputState::Pressed
+            ),
+            Some((69, 4))
+        );
+        assert_eq!(
+            xtest_device_event(
+                &input,
+                X11Target::MouseButton { button: 1 },
+                InputState::Released
+            ),
+            Some((70, 4))
+        );
+    }
+
+    #[test]
+    fn xtest_device_event_requires_matching_device() {
+        let input = XTestInput {
+            event_base: 66,
+            keyboard_device: Some(5),
+            pointer_device: None,
+        };
+
+        assert_eq!(
+            xtest_device_event(&input, X11Target::Key { keycode: 49 }, InputState::Pressed),
+            Some((67, 5))
+        );
+        assert_eq!(
+            xtest_device_event(
+                &input,
+                X11Target::MouseButton { button: 1 },
+                InputState::Pressed
+            ),
+            None
         );
     }
 }

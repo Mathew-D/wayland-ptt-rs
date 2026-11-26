@@ -2,24 +2,23 @@ use std::env;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Config {
+    // Use XTEST by default so Mumble's XI2 raw-input shortcut engine sees the key.
     pub xtest: bool,
-    // Set to 'true' to log configuration and matching libev events.
     pub verbose: bool,
-    // The key to listen for in the event stream.
-    pub listen_key: String,
-    // The key to send to X11 when a matching event is detected.
+    // Umbriel global-shortcut trigger, using its CTRL+ALT+SHIFT+LOGO+Key grammar.
+    pub trigger: String,
+    pub shortcut_id: String,
+    pub application: String,
+    // The key or MOUSE<n> button to send to X11 while the trigger is held.
     pub send_key: String,
-    // The mouse button to send to X11 in place of send_key.
     pub mouse_button: Option<u32>,
-    // The input device to watch with libev.
-    pub input_device_path: String,
     // The application to send events to, matched against WM_CLASS and window titles.
     pub target: String,
 }
 
 pub fn usage(program: &str) -> String {
     format!(
-        "Usage: {program} [-v] [--xtest] [-l listen_key] [-s send_key] [-t target] /dev/input/by-id/<device-name>"
+        "Usage: {program} [-v] [--send-event] [--trigger TRIGGER] [--shortcut-id ID] [--application APP] [-s send_key] [-t target]"
     )
 }
 
@@ -31,19 +30,26 @@ where
     let program = args.next().unwrap_or_else(|| "wayland-ptt".to_string());
 
     let mut verbose = false;
-    let mut xtest = false;
-    let mut listen_key = "BTN_EXTRA".to_string();
-    let mut send_key = "MOUSE9".to_string();
-    let mut mouse_button = Some(9);
-    let mut target = "discord".to_string();
-    let mut input_device_path = None;
+    let mut xtest = true;
+    let mut trigger = "CTRL+grave".to_string();
+    let mut shortcut_id = "push-to-talk".to_string();
+    let mut application = "wayland-ptt".to_string();
+    let mut send_key = "grave".to_string();
+    let mut mouse_button = None;
+    let mut target = "mumble".to_string();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-v" => verbose = true,
-            "--xtest" => xtest = true,
-            "-l" => {
-                listen_key = args.next().ok_or_else(|| usage(&program))?;
+            "--send-event" => xtest = false,
+            "--trigger" => {
+                trigger = args.next().ok_or_else(|| usage(&program))?;
+            }
+            "--shortcut-id" => {
+                shortcut_id = args.next().ok_or_else(|| usage(&program))?;
+            }
+            "--application" => {
+                application = args.next().ok_or_else(|| usage(&program))?;
             }
             "-t" | "--target" => {
                 target = args.next().ok_or_else(|| usage(&program))?;
@@ -51,7 +57,7 @@ where
                     return Err(usage(&program));
                 }
             }
-            "-s" => {
+            "-s" | "--send-key" => {
                 let value = args.next().ok_or_else(|| usage(&program))?;
                 mouse_button = value
                     .strip_prefix("MOUSE")
@@ -64,24 +70,31 @@ where
                 send_key = value;
             }
             _ if arg.starts_with('-') => return Err(usage(&program)),
-            _ => {
-                if input_device_path.is_some() {
-                    return Err(usage(&program));
-                }
-                input_device_path = Some(arg);
-            }
+            _ => return Err(usage(&program)),
         }
     }
 
-    let input_device_path = input_device_path.ok_or_else(|| usage(&program))?;
+    if trigger.is_empty() || trigger.len() > 256 {
+        return Err("Invalid --trigger value".to_string());
+    }
+    if shortcut_id.is_empty() || shortcut_id.len() > 256 {
+        return Err("Invalid --shortcut-id value".to_string());
+    }
+    if application.is_empty() || application.len() > 256 {
+        return Err("Invalid --application value".to_string());
+    }
+    if send_key.is_empty() {
+        return Err("Invalid -s/--send-key value".to_string());
+    }
 
     Ok(Config {
         xtest,
         verbose,
-        listen_key,
+        trigger,
+        shortcut_id,
+        application,
         send_key,
         mouse_button,
-        input_device_path,
         target,
     })
 }

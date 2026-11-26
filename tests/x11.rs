@@ -1,4 +1,4 @@
-use wayland_ptt::x11::{configure_x11_with_display_name, ConfigureX11Error};
+use wayland_ptt::x11::{ConfigureX11Error, configure_x11_with_display_name};
 
 #[test]
 fn rejects_invalid_display_name() {

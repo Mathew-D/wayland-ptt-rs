@@ -3,5 +3,5 @@ Type=Application
 Terminal=false
 Name=wayland-ptt
 GenericName=wayland-ptt
-Comment=Enables push-to-talk (PTT) in X11 apps running under XWayland
-Exec=/usr/bin/wayland-ptt /dev/input/by-id/<device-id>
+Comment=Forwards Umbriel global shortcuts to XWayland apps
+Exec=/usr/bin/wayland-ptt
