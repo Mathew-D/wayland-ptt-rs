@@ -11,6 +11,7 @@ fn config() -> Config {
         send_key: "grave".to_string(),
         mouse_button: None,
         target: "mumble".to_string(),
+        vesktop_action: Some("pushToMute".to_string()),
     }
 }
 

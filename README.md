@@ -13,7 +13,7 @@ The default configuration targets Mumble's Whisper/Shout shortcut, which is boun
 ## Usage
 
 ```
-wayland-ptt [-v] [--send-event] [--trigger TRIGGER] [--shortcut-id ID] [--application APP] [-s send_key] [-t target]
+wayland-ptt [-v] [--send-event] [--trigger TRIGGER] [--shortcut-id ID] [--application APP] [-s send_key] [-t target] [--vesktop-action ACTION] [--no-vesktop]
 ```
 
 Examples:
@@ -31,6 +31,10 @@ wayland-ptt -s MOUSE5 -t discord
 For Mumble, enable its evdev global-shortcut engine (`"enable_evdev": true` under `"shortcuts"` in `mumble_settings.json`) and restart Mumble. Because the virtual keyboard is a real input device, the emitted key can also reach the focused Wayland window; bind Mumble to a non-printing key if that is a problem.
 
 `-t` matches case-insensitively against X11 `WM_CLASS` and window titles when using `--send-event`. With uinput/XTEST, input is injected globally and the target is used only for direct delivery and verbose logging.
+
+## Vesktop / Discord
+
+On each chord press and release the daemon also writes `run-shortcut <action>:down|up` to `$XDG_RUNTIME_DIR/vesktop.sock`, so one physical chord can drive both Mumble and Vesktop without needing a second Umbriel keybind. The default action is `pushToMute`; override it with `--vesktop-action` (e.g. `pushToTalk`, `toggleMute`) or disable it with `--no-vesktop`. This only does something while Vesktop is running — stock Discord has no such socket.
 
 ## Umbriel approval and credentials
 

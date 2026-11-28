@@ -14,11 +14,13 @@ pub struct Config {
     pub mouse_button: Option<u32>,
     // The application to send events to, matched against WM_CLASS and window titles.
     pub target: String,
+    // Vesktop shortcut action triggered on the same chord (None disables it).
+    pub vesktop_action: Option<String>,
 }
 
 pub fn usage(program: &str) -> String {
     format!(
-        "Usage: {program} [-v] [--send-event] [--trigger TRIGGER] [--shortcut-id ID] [--application APP] [-s send_key] [-t target]"
+        "Usage: {program} [-v] [--send-event] [--trigger TRIGGER] [--shortcut-id ID] [--application APP] [-s send_key] [-t target] [--vesktop-action ACTION] [--no-vesktop]"
     )
 }
 
@@ -37,6 +39,7 @@ where
     let mut send_key = "grave".to_string();
     let mut mouse_button = None;
     let mut target = "mumble".to_string();
+    let mut vesktop_action = Some("pushToMute".to_string());
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -69,6 +72,14 @@ where
                 }
                 send_key = value;
             }
+            "--no-vesktop" => vesktop_action = None,
+            "--vesktop-action" => {
+                let value = args.next().ok_or_else(|| usage(&program))?;
+                if value.is_empty() {
+                    return Err("Invalid --vesktop-action value".to_string());
+                }
+                vesktop_action = Some(value);
+            }
             _ if arg.starts_with('-') => return Err(usage(&program)),
             _ => return Err(usage(&program)),
         }
@@ -96,6 +107,7 @@ where
         send_key,
         mouse_button,
         target,
+        vesktop_action,
     })
 }
 

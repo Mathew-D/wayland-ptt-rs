@@ -14,6 +14,7 @@ fn config(send_key: &str, mouse_button: Option<u32>) -> Config {
         send_key: send_key.to_string(),
         mouse_button,
         target: "mumble".to_string(),
+        vesktop_action: Some("pushToMute".to_string()),
     }
 }
 
@@ -53,6 +54,7 @@ fn parses_all_supported_flags() {
             send_key: "F13".to_string(),
             mouse_button: None,
             target: "mumble".to_string(),
+            vesktop_action: Some("pushToMute".to_string()),
         }
     );
 }
@@ -111,4 +113,18 @@ fn rejects_empty_shortcut_id() {
     let err = parse_args_from(args(&["wayland-ptt", "--shortcut-id", ""])).unwrap_err();
 
     assert_eq!(err, "Invalid --shortcut-id value");
+}
+
+#[test]
+fn no_vesktop_disables_action() {
+    let parsed = parse_args_from(args(&["wayland-ptt", "--no-vesktop"])).unwrap();
+
+    assert_eq!(parsed.vesktop_action, None);
+}
+
+#[test]
+fn vesktop_action_is_configurable() {
+    let parsed = parse_args_from(args(&["wayland-ptt", "--vesktop-action", "pushToTalk"])).unwrap();
+
+    assert_eq!(parsed.vesktop_action, Some("pushToTalk".to_string()));
 }

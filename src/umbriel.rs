@@ -7,6 +7,7 @@ use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 
 use crate::args::Config;
+use crate::vesktop;
 use crate::x11::{InputState, X11Config, X11Target, send_target_state};
 
 pub mod umbriel_global_shortcuts_v1 {
@@ -114,6 +115,7 @@ struct State {
     x11_config: X11Config,
     x11_target: X11Target,
     target_name: String,
+    vesktop_action: Option<String>,
     error: Option<String>,
 }
 
@@ -145,6 +147,11 @@ impl State {
             &self.target_name,
         ) {
             self.fail(err.to_string());
+            return;
+        }
+
+        if let Some(action) = &self.vesktop_action {
+            vesktop::run_shortcut(action, state == InputState::Pressed, self.verbose);
         }
     }
 }
@@ -280,6 +287,7 @@ pub fn run(config: &Config, x11_config: X11Config, x11_target: X11Target) -> Res
         x11_config,
         x11_target,
         target_name: config.target.clone(),
+        vesktop_action: config.vesktop_action.clone(),
         error: None,
     };
 
